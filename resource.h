@@ -12,3 +12,4 @@
 #define IDC_LOCAL_IP                            40007
 #define IDC_STATUS                              40008
 #define IDC_START                               40009
+#define IDI_MYICON                              201

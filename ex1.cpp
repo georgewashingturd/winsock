@@ -15,6 +15,8 @@
 #include "resource.h"
 
 #define GetCurrentDir _getcwd
+#define FailWithAction(cond, action, label) if (cond) {action; goto label;}
+#define UpdateStatus(...) do{ sprintf(msg, __VA_ARGS__); UpdateStatusPanel(msg);}while(0)
 
 #define DEFAULT_BUFLEN (512*16)
 #define DEFAULT_PORT    "27015"
@@ -34,6 +36,9 @@ DWORD clientDescriptor;
 
 HWND dlgHandle;
 char * statusBuffer;
+
+char msg[BUFSIZE];
+char errMsg[BUFSIZE];
     
 /*
 string  GetFileName( const string & prompt ) { 
@@ -48,6 +53,28 @@ string  GetFileName( const string & prompt ) {
     return buffer;
 }
 */
+
+char * PrintLastError(DWORD dw)
+{ 
+    // Retrieve the system error message for the last-error code
+
+    char lpMsgBuf[BUFSIZE*16];
+
+    FormatMessage(
+        FORMAT_MESSAGE_FROM_SYSTEM |
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        dw,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPTSTR) &lpMsgBuf,
+        BUFSIZE*16, 
+        NULL );
+
+    sprintf(errMsg, "Error %u:\r\n%s", (unsigned int)dw, (char *)lpMsgBuf); 
+
+    return errMsg;
+}
+
 
 void UpdateStatusPanel(const char * message)
 {
@@ -82,7 +109,6 @@ int getLocalAdaptersInfo(char * buffer)
     DWORD dwRetVal = 0;
     UINT i;
     PIP_ADDR_STRING ipList;
-    char msg[BUFSIZE];
 
     buffer[0] = '\0';
 
@@ -92,29 +118,29 @@ int getLocalAdaptersInfo(char * buffer)
 
     if (pAdapterInfo == NULL)
     {
-        UpdateStatusPanel("Error allocating memory needed to call GetAdaptersinfo()\r\n");
+        UpdateStatus("Error allocating memory needed to call GetAdaptersinfo()\r\n");
         return 1;
     }
     else
-        UpdateStatusPanel("Memory allocation for GetAdaptersinfo() call is OK!\r\n");
+        UpdateStatus("Memory allocation for GetAdaptersinfo() call is OK!\r\n");
 
     // Make an initial call to GetAdaptersInfo to get
     // the necessary size into the ulOutBufLen variable
     if (GetAdaptersInfo(pAdapterInfo, &ulOutBufLen) == ERROR_BUFFER_OVERFLOW)
     {
-        UpdateStatusPanel("Not enough buffer! Re-allocating...\r\n");
+        UpdateStatus("Not enough buffer! Re-allocating...\r\n");
         free(pAdapterInfo);
         pAdapterInfo = (IP_ADAPTER_INFO *) malloc(ulOutBufLen);
         if (pAdapterInfo == NULL)
         {
-            UpdateStatusPanel("Error allocating memory needed to call GetAdaptersinfo()\r\n");
+            UpdateStatus("Error allocating memory needed to call GetAdaptersinfo()\r\n");
             return 1;
         }
         else
-            UpdateStatusPanel("Memory allocation for GetAdaptersinfo() 2nd call is OK!\r\n");
+            UpdateStatus("Memory allocation for GetAdaptersinfo() 2nd call is OK!\r\n");
     }
     else
-        UpdateStatusPanel("Buffer for GetAdaptersInfo() is OK!\r\n");
+        UpdateStatus("Buffer for GetAdaptersInfo() is OK!\r\n");
 
  
 
@@ -149,8 +175,7 @@ int getLocalAdaptersInfo(char * buffer)
     }
     else
     {
-        sprintf(msg, "GetAdaptersInfo failed with error: %d\r\n", dwRetVal);
-        UpdateStatusPanel(msg);
+        UpdateStatus("GetAdaptersInfo failed with error: %d\r\n", dwRetVal);
     }
 
     if (pAdapterInfo)
@@ -176,6 +201,7 @@ char ** GetFileName( OPENFILENAME * ofns, char * buffer, int * numFiles, const s
     ofns->nMaxFile = BUFSIZE;
     ofns->lpstrTitle = prompt.c_str();
     ofns->Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+    ofns->hwndOwner = dlgHandle; // to make it modal
 
     GetOpenFileName( ofns );
 
@@ -228,6 +254,7 @@ char ** GetFileName( OPENFILENAME * ofns, char * buffer, int * numFiles, const s
 static DWORD WINAPI StartServer(void* serverArg)
 {
     int iResult;
+	DWORD ret = 1;
 
     SOCKET ListenSocket = INVALID_SOCKET;
     SOCKET ClientSocket = INVALID_SOCKET;
@@ -235,13 +262,10 @@ static DWORD WINAPI StartServer(void* serverArg)
     struct addrinfo *result = NULL;
     struct addrinfo hints;
 
-    int iSendResult;
-    char recvbuf[DEFAULT_BUFLEN];
-    char workbuf[DEFAULT_BUFLEN*2];
+    char recvbuf[DEFAULT_BUFLEN*2];
     int recvbuflen = DEFAULT_BUFLEN;
     
     char folderName[128];
-    char msg[BUFSIZE];
     
     // Winsock should have been initialized
 
@@ -251,52 +275,24 @@ static DWORD WINAPI StartServer(void* serverArg)
     hints.ai_protocol = IPPROTO_TCP;
     hints.ai_flags = AI_PASSIVE;
     
-    UpdateStatusPanel("Starting Server ...\r\n");
+    UpdateStatus("Starting Server ...\r\n");
 
     // Resolve the server address and port
-    iResult = getaddrinfo(NULL, portNo, &hints, &result);
-    if ( iResult != 0 ) {
-        printf("getaddrinfo failed with error: %d\n", iResult);
-        return 1;
-    }
+	FailWithAction( (iResult = getaddrinfo(NULL, portNo, &hints, &result)) != 0, UpdateStatus("getaddrinfo failed with error: %d\n", iResult), EXIT)
 
     // Create a SOCKET for connecting to server
-    ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (ListenSocket == INVALID_SOCKET)
-    {
-        printf("socket failed with error: %ld\n", WSAGetLastError());
-        freeaddrinfo(result);
-        return 1;
-    }
+    FailWithAction( (ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol)) == INVALID_SOCKET, UpdateStatus("socket failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT)
 
     // Setup the TCP listening socket
-    iResult = bind( ListenSocket, result->ai_addr, (int)result->ai_addrlen);
-    if (iResult == SOCKET_ERROR)
-    {
-        printf("bind failed with error: %d\n", WSAGetLastError());
-        freeaddrinfo(result);
-        closesocket(ListenSocket);
-        return 1;
-    }
-
+    FailWithAction( bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR,  UpdateStatus("bind failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
     freeaddrinfo(result);
+    // Don't forget to do this as this might cause a crash if we free result twice
+    result = NULL;
 
-    iResult = listen(ListenSocket, SOMAXCONN);
-    if (iResult == SOCKET_ERROR)
-    {
-        printf("listen failed with error: %d\n", WSAGetLastError());
-        closesocket(ListenSocket);
-        return 1;
-    }
+    FailWithAction( listen(ListenSocket, SOMAXCONN), UpdateStatus("listen failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
 
     // Accept a client socket
-    ClientSocket = accept(ListenSocket, NULL, NULL);
-    if (ClientSocket == INVALID_SOCKET)
-    {
-        printf("accept failed with error: %d\n", WSAGetLastError());
-        closesocket(ListenSocket);
-        return 1;
-    }
+    FailWithAction( (ClientSocket = accept(ListenSocket, NULL, NULL)) == INVALID_SOCKET, UpdateStatus("accept failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
 
     // No longer need server socket
     closesocket(ListenSocket);
@@ -306,7 +302,7 @@ static DWORD WINAPI StartServer(void* serverArg)
     int accumSizeRecv;
     do
     {        
-        iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
+        FailWithAction( (iResult = recv(ClientSocket, recvbuf, recvbuflen, 0)) < 0, UpdateStatus("recv failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
         if (iResult > 0) 
         {
             // 0xBEEF0000 is indicator that the following data is the folder name
@@ -323,8 +319,7 @@ static DWORD WINAPI StartServer(void* serverArg)
                     if (folderName[i] == ':')
                         folderName[i] = '.';
                 }
-                sprintf(msg, "Creating folder: %s\r\n", folderName);
-                UpdateStatusPanel(msg);
+                UpdateStatus("Creating folder: %s\r\n", folderName);
                 
                 CreateDirectory(folderName, NULL);
             }
@@ -335,33 +330,24 @@ static DWORD WINAPI StartServer(void* serverArg)
                 
                 sprintf(fullPath, "%s\\%s", folderName, &recvbuf[4]);
                 
-                sprintf(msg, "Receiving file name: %s\r\n", &recvbuf[4]);
-                UpdateStatusPanel(msg);
+                UpdateStatus("Receiving file name: %s\r\n", &recvbuf[4]);
                 
-                fo = fopen(fullPath, "wb");
-                if (fo == NULL)
-                {
-                    closesocket(ClientSocket);
-                    return 1;
-                }
+                FailWithAction( (fo = fopen(fullPath, "wb")) == NULL, UpdateStatus("Error creating file\r\n"), EXIT )
                 accumSizeRecv = 0;
             }
             // 0xBEEF0002 is indicator of end of file
             else if (((unsigned int *) recvbuf)[0] == 0xBEEF0002)
             {
                 fclose(fo);
-                sprintf(msg, "recv complete: %d bytes\r\n", accumSizeRecv);
-                UpdateStatusPanel(msg);
+                UpdateStatus("recv complete: %d bytes\r\n", accumSizeRecv);
             }
             else if (((unsigned int *) recvbuf)[0] == 0xDEADBEEF && ((unsigned int *) recvbuf)[1] == 0xBEEFFACE)
             {
                 fclose(fo);
-
-                sprintf(msg, "Transaction complete, closing connection ...\r\n", accumSizeRecv);
-                UpdateStatusPanel(msg);
+                UpdateStatus("Transaction complete, closing connection ...\r\n", accumSizeRecv);
                 
-                closesocket(ClientSocket);
-                return 1;
+                //return 1;
+                break;
             }
             else
             {
@@ -369,49 +355,33 @@ static DWORD WINAPI StartServer(void* serverArg)
                 //printf("Bytes received: %d\n", accumSizeRecv);
 
                 int writeLen;
-                writeLen = fwrite(recvbuf, 1, iResult, fo);
-
-                if (writeLen != iResult)
-                {
-                    return 1;
-                }
+                FailWithAction( (writeLen = fwrite(recvbuf, 1, iResult, fo)) != iResult, UpdateStatus("Write file failed"), EXIT )
             }
             
             // send valid response after every receive
             ((unsigned int *)recvbuf)[0] = 0xBEEFFACE;
-            iResult = send( ClientSocket, recvbuf, sizeof(unsigned int), 0 );
-            if (iResult == SOCKET_ERROR) 
-            {
-                printf("send response failed: %d\n", WSAGetLastError());
-                closesocket(ClientSocket);
-                return 1;
-            }
+            FailWithAction( send( ClientSocket, recvbuf, sizeof(unsigned int), 0 ) == SOCKET_ERROR, UpdateStatus("send response failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
         }
         else if (iResult == 0)
-            printf("Connection closing...\n");
-        else
-        {
-            printf("recv failed with error: %d\n", WSAGetLastError());
-            closesocket(ClientSocket);
-            return 1;
-        }
-
+            UpdateStatus("Connection closing...\n");
     } while (iResult > 0);
 
     // shutdown the connection since we're done
-    iResult = shutdown(ClientSocket, SD_SEND);
-    if (iResult == SOCKET_ERROR)
-    {
-        printf("shutdown failed with error: %d\n", WSAGetLastError());
-        closesocket(ClientSocket);
-        return 1;
-    }
+    FailWithAction( shutdown(ClientSocket, SD_SEND) == SOCKET_ERROR, UpdateStatus("shutdown failed with error!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
 
-    // cleanup
-    closesocket(ClientSocket);
+	ret = 0;
+	
+// cleanup
+EXIT:
+	if (result != NULL)
+		freeaddrinfo(result);
+
+	closesocket(ListenSocket);
+	closesocket(ClientSocket);
+
+    EnableWindow(GetDlgItem( dlgHandle, IDC_START ), true);
     
-
-    return 0;
+    return ret;
 }
 
 bool IsServerResponseValid(SOCKET * ConnectSocket, char recvbuf[])
@@ -422,7 +392,7 @@ bool IsServerResponseValid(SOCKET * ConnectSocket, char recvbuf[])
     iResult = recv(*ConnectSocket, recvbuf, DEFAULT_BUFLEN, 0);
     if (((unsigned int *)recvbuf)[0] != 0xBEEFFACE)
     {
-        printf("Server response error %d\n", WSAGetLastError());
+        UpdateStatus("Server response error!\r\n%s\r\n", PrintLastError(WSAGetLastError()));
         closesocket(*ConnectSocket);
         return false;
     }
@@ -436,7 +406,7 @@ static DWORD WINAPI StartClient(void* clientArg)
     struct addrinfo *result = NULL,
                     *ptr = NULL,
                     hints;
-    int rc;
+    int ret = 1;
     //char *sendbuf = "this is a test";
     char recvbuf[DEFAULT_BUFLEN];
     int iResult;
@@ -448,37 +418,25 @@ static DWORD WINAPI StartClient(void* clientArg)
     
     FILE * fi;
     
-    char msg[BUFSIZE];
-
     ZeroMemory( &hints, sizeof(hints) );
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
 
     // Resolve the server address and port
-    sprintf(msg, "Connecting to: %s\r\n", destIP);
-    UpdateStatusPanel(msg);
+    UpdateStatus("Connecting to: %s\r\n", destIP);
     
-    iResult = getaddrinfo(destIP, portNo, &hints, &result);
-    if ( iResult != 0 ) {
-        printf("getaddrinfo failed with error: %d\n", iResult);
-        return 1;
-    }
+    FailWithAction( getaddrinfo(destIP, portNo, &hints, &result) != 0 , UpdateStatus("getaddrinfo failed with error: %d\n", iResult), EXIT )
 
     // Attempt to connect to an address until one succeeds
     for(ptr=result; ptr != NULL ;ptr=ptr->ai_next) {
 
         // Create a SOCKET for connecting to server
-        ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype, 
-            ptr->ai_protocol);
-        if (ConnectSocket == INVALID_SOCKET) {
-            printf("socket failed with error: %ld\n", WSAGetLastError());
-            return 1;
-        }
+        FailWithAction( (ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol)) == INVALID_SOCKET, UpdateStatus("socket failed with error!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
 
         // Connect to server.
-        iResult = connect( ConnectSocket, ptr->ai_addr, (int)ptr->ai_addrlen);
-        if (iResult == SOCKET_ERROR) {
+        if (connect( ConnectSocket, ptr->ai_addr, (int)ptr->ai_addrlen) == SOCKET_ERROR)
+		{
             closesocket(ConnectSocket);
             ConnectSocket = INVALID_SOCKET;
             continue;
@@ -488,21 +446,11 @@ static DWORD WINAPI StartClient(void* clientArg)
 
     freeaddrinfo(result);
 
-    if (ConnectSocket == INVALID_SOCKET)
-    {
-        printf("Unable to connect to server!\n");
-        return 1;
-    }
+    FailWithAction( ConnectSocket == INVALID_SOCKET, UpdateStatus("Unable to connect to server!\n"), EXIT )
 
     // send signal to create a new directory
     ((unsigned int *)recvbuf)[0] = 0xBEEF0000;
-    iResult = send( ConnectSocket, recvbuf, sizeof(unsigned int), 0 );
-    if (iResult == SOCKET_ERROR) 
-    {
-        printf("send failed with error: %d\n", WSAGetLastError());
-        closesocket(ConnectSocket);
-        return 1;
-    }
+    FailWithAction( send( ConnectSocket, recvbuf, sizeof(unsigned int), 0 ) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
     
     if (!IsServerResponseValid(&ConnectSocket, recvbuf))
         return 1;
@@ -512,16 +460,10 @@ static DWORD WINAPI StartClient(void* clientArg)
         ((unsigned int *)recvbuf)[0] = 0xBEEF0001;
         strcpy(&recvbuf[4], fileList[i]);
         
-        sprintf(msg, "Sending file: %s\r\n", &recvbuf[4]);
-        UpdateStatusPanel(msg);
+        UpdateStatus("Sending file: %s\r\n", &recvbuf[4]);
         
-        iResult = send( ConnectSocket, recvbuf, sizeof(unsigned int) + strlen(fileList[i]) + 1, 0 );
-        if (iResult == SOCKET_ERROR) 
-        {
-            printf("send failed with error: %d\n", WSAGetLastError());
-            closesocket(ConnectSocket);
-            return 1;
-        }
+        FailWithAction( send( ConnectSocket, recvbuf, sizeof(unsigned int) + strlen(fileList[i]) + 1, 0 ) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT ) 
+       
         if (!IsServerResponseValid(&ConnectSocket, recvbuf))
             return 1;
         
@@ -531,18 +473,11 @@ static DWORD WINAPI StartClient(void* clientArg)
         accumSizeSent = 0;
         while (!feof(fi) && readLen > 0)
         {
-            readLen = fread(recvbuf,1,DEFAULT_BUFLEN,fi);
+            readLen = fread(recvbuf, 1, DEFAULT_BUFLEN, fi);
 
             if (readLen > 0)
             {
-                iResult = send( ConnectSocket, recvbuf, readLen, 0 );
-                if (iResult == SOCKET_ERROR) 
-                {
-                    printf("send failed with error: %d\n", WSAGetLastError());
-                    closesocket(ConnectSocket);
-                    return 1;
-                }
-                
+                FailWithAction( (iResult = send( ConnectSocket, recvbuf, readLen, 0 )) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT ) 
                 accumSizeSent += iResult;
                 //printf("Bytes Sent: %ld\n", accumSizeSent);
             }
@@ -550,18 +485,11 @@ static DWORD WINAPI StartClient(void* clientArg)
             if (!IsServerResponseValid(&ConnectSocket, recvbuf))
                 return 1;
         }
-        
-        sprintf(msg, "Total bytes Sent: %ld\r\n", accumSizeSent);
-        UpdateStatusPanel(msg);
+
+        UpdateStatus("Total bytes Sent: %d\r\n", accumSizeSent);
         
         ((unsigned int *)recvbuf)[0] = 0xBEEF0002;
-        iResult = send( ConnectSocket, recvbuf, sizeof(unsigned int), 0 );
-        if (iResult == SOCKET_ERROR) 
-        {
-            printf("send failed with error: %d\n", WSAGetLastError());
-            closesocket(ConnectSocket);
-            return 1;
-        }
+        FailWithAction( send( ConnectSocket, recvbuf, sizeof(unsigned int), 0 ) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT ) 
         
         if (!IsServerResponseValid(&ConnectSocket, recvbuf))
             return 1;
@@ -570,32 +498,23 @@ static DWORD WINAPI StartClient(void* clientArg)
     // signal the end of file
     ((unsigned int *)recvbuf)[0] = 0xDEADBEEF;
     ((unsigned int *)recvbuf)[1] = 0xBEEFFACE;
-    iResult = send( ConnectSocket, recvbuf, 2*sizeof(unsigned int), 0 );
-    printf("Last Bytes Sent: %ld\n", iResult);
-    if (iResult == SOCKET_ERROR)
-    {
-        printf("send failed with error: %d\n", WSAGetLastError());
-        closesocket(ConnectSocket);
-        return 1;
-    }
+    FailWithAction( (iResult = send( ConnectSocket, recvbuf, 2*sizeof(unsigned int), 0 )) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
+	UpdateStatus("Last Bytes Sent: %ld\n", iResult);
 
     // shutdown the connection since no more data will be sent
-    iResult = shutdown(ConnectSocket, SD_SEND);
-    
-    if (iResult == SOCKET_ERROR) 
-    {
-        printf("shutdown failed with error: %d\n", WSAGetLastError());
-        closesocket(ConnectSocket);
-        return 1;        
-    }
-    
-    // cleanup
-    closesocket(ConnectSocket);
-    
+    FailWithAction( shutdown(ConnectSocket, SD_SEND) == SOCKET_ERROR, UpdateStatus("shutdown failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT) 
+
+    ret = 0;
+EXIT:
+	// cleanup
+	closesocket(ConnectSocket);
+
     // Don't forget to reset it for next transaction
     numFiles = 0;
 
-    return 0;
+    EnableWindow(GetDlgItem( dlgHandle, IDC_START ), true);
+    
+    return ret;
 }
 
 // DialogProc
@@ -624,10 +543,18 @@ void OpenFileChooserDialog(void)
 BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp ) 
 {
     char buffer[BUFSIZE*16];
+    HICON hIcon;
 
     switch ( message ) 
     { 
-        case WM_INITDIALOG:            
+        case WM_INITDIALOG:
+            
+            hIcon = (HICON)LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_MYICON));
+            if(hIcon)
+            {
+                SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+            }
+
             // init various things
             dlgHandle = hwnd;
             SetWindowText(hwnd, "Welcome!");
@@ -641,7 +568,7 @@ BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
             getLocalAdaptersInfo(buffer);
             SetWindowText(GetDlgItem( hwnd, IDC_LOCAL_IP ), buffer);
             
-            // SetFocus doesn't work here
+            // SetFocus doesn't work here but we can set the tab-order in resource editor
             //SetFocus(GetDlgItem( hwnd, IDC_IP_ADDR ));
             
             return TRUE;
@@ -662,6 +589,8 @@ BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
             }
             else if ( ctl == IDC_START && event == BN_CLICKED )
             {
+                EnableWindow(GetDlgItem( hwnd, IDC_START ), false);
+
                 if (IsDlgButtonChecked(hwnd, IDC_RECV))
                 {
                     // Don't forget to get the port number
@@ -679,6 +608,7 @@ BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
                     if (numFiles <= 0)
                     {
                         MessageBox(NULL, "No Files Chosen", "Error", 0);
+                        EnableWindow(GetDlgItem( hwnd, IDC_START ), true);
                         return TRUE;
                     }
                     
@@ -717,13 +647,13 @@ void StartDialog(void)
     HWND dlg = CreateDialog( GetModuleHandle(0),
                             MAKEINTRESOURCE( IDD_MAIN_SOCKET  ), 
                             0, DialogProc );
-    MSG msg;
-    while ( GetMessage( & msg, 0, 0, 0 ) ) 
+    MSG dlgMsg;
+    while ( GetMessage( & dlgMsg, 0, 0, 0 ) ) 
     {
-        if ( ! IsDialogMessage( dlg, & msg ) ) 
+        if ( ! IsDialogMessage( dlg, & dlgMsg ) ) 
         {
-            TranslateMessage( & msg );
-            DispatchMessage( & msg );
+            TranslateMessage( & dlgMsg );
+            DispatchMessage( & dlgMsg );
         }
     }	
 }
@@ -736,7 +666,8 @@ int main(void)
     iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
     if (iResult != 0) 
     {
-        printf("WSAStartup failed with error: %d\n", iResult);
+		sprintf(msg, "WSAStartup failed with error: %d\n", iResult);
+        MessageBox(NULL, msg, "Error", 0);
         return 1;
     }
  
