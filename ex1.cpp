@@ -34,11 +34,22 @@ char portNo[BUFSIZE];
 DWORD serverDescriptor;
 DWORD clientDescriptor;
 
+HANDLE clientHandle;
+HANDLE serverHandle;
+
 HWND dlgHandle;
 char * statusBuffer;
 
 char msg[BUFSIZE];
 char errMsg[BUFSIZE];
+
+// Client Server stuffs
+SOCKET ListenSocket = INVALID_SOCKET;
+SOCKET ClientSocket = INVALID_SOCKET;
+struct addrinfo *resultServer = NULL;
+
+SOCKET ConnectSocket = INVALID_SOCKET;
+struct addrinfo *resultClient = NULL;
     
 /*
 string  GetFileName( const string & prompt ) { 
@@ -90,6 +101,49 @@ void UpdateStatusPanel(const char * message)
     sprintf(&statusBuffer[ptr], "%s", message);
     SetWindowText(GetDlgItem( dlgHandle, IDC_STATUS ), statusBuffer);
     PostMessage(GetDlgItem( dlgHandle, IDC_STATUS ),EM_LINESCROLL,0,(LPARAM)100000);
+}
+
+void ToggleStartButton(void)
+{
+    char status[16];
+                
+    GetWindowText(GetDlgItem( dlgHandle, IDC_START ), status, GetWindowTextLength( GetDlgItem( dlgHandle, IDC_START ) ) + 1);
+                
+    if (strcmp(status, "Stop") == 0)
+    {
+        SetWindowText(GetDlgItem( dlgHandle, IDC_START ), "Start");
+        EnableWindow(GetDlgItem( dlgHandle, IDC_RECV ), true);
+        EnableWindow(GetDlgItem( dlgHandle, IDC_SEND ), true);
+        
+        if (serverHandle != NULL)
+        {
+            if (resultServer != NULL)
+                freeaddrinfo(resultServer);
+
+            closesocket(ListenSocket);
+            closesocket(ClientSocket);
+
+            serverHandle = NULL;
+            
+            UpdateStatus("Server stopped.\r\n");
+        }
+        else if (clientHandle != NULL)
+        {
+            closesocket(ConnectSocket);
+
+            // Don't forget to reset it for next transaction
+            numFiles = 0;
+
+            clientHandle = NULL;
+            UpdateStatus("Client stopped.\r\n");
+        }
+    }
+    else
+    {
+        SetWindowText(GetDlgItem( dlgHandle, IDC_START ), "Stop");
+        EnableWindow(GetDlgItem( dlgHandle, IDC_RECV ), false);
+        EnableWindow(GetDlgItem( dlgHandle, IDC_SEND ), false);
+    }
 }
 
 int getLocalAdaptersInfo(char * buffer)
@@ -207,12 +261,12 @@ char ** GetFileName( OPENFILENAME * ofns, char * buffer, int * numFiles, const s
 
     ptr = ofns->lpstrFile;
     ptr[ofns->nFileOffset-1] = 0;
-    //printf("Directory: %s\n", ptr);
+    //printf("Directory: %s\r\n", ptr);
     ptr += ofns->nFileOffset;
     while (*ptr)
     {
         (*numFiles)++;
-        //printf("File: %s\n", ptr);
+        //printf("File: %s\r\n", ptr);
         ptr += (strlen(ptr)+1);
     }
 
@@ -253,19 +307,19 @@ char ** GetFileName( OPENFILENAME * ofns, char * buffer, int * numFiles, const s
 // Thread worker for server
 static DWORD WINAPI StartServer(void* serverArg)
 {
-    int iResult;
+    int iresultServer;
 	DWORD ret = 1;
 
-    SOCKET ListenSocket = INVALID_SOCKET;
-    SOCKET ClientSocket = INVALID_SOCKET;
-
-    struct addrinfo *result = NULL;
     struct addrinfo hints;
 
     char recvbuf[DEFAULT_BUFLEN*2];
     int recvbuflen = DEFAULT_BUFLEN;
     
     char folderName[128];
+    
+    ListenSocket = INVALID_SOCKET;
+    ClientSocket = INVALID_SOCKET;
+    resultServer = NULL;
     
     // Winsock should have been initialized
 
@@ -278,16 +332,18 @@ static DWORD WINAPI StartServer(void* serverArg)
     UpdateStatus("Starting Server ...\r\n");
 
     // Resolve the server address and port
-	FailWithAction( (iResult = getaddrinfo(NULL, portNo, &hints, &result)) != 0, UpdateStatus("getaddrinfo failed with error: %d\n", iResult), EXIT)
+	FailWithAction( (iresultServer = getaddrinfo(NULL, portNo, &hints, &resultServer)) != 0, UpdateStatus("getaddrinfo failed with error: %d\r\n", iresultServer), EXIT)
 
     // Create a SOCKET for connecting to server
-    FailWithAction( (ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol)) == INVALID_SOCKET, UpdateStatus("socket failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT)
+    FailWithAction( (ListenSocket = socket(resultServer->ai_family, resultServer->ai_socktype, resultServer->ai_protocol)) == INVALID_SOCKET, UpdateStatus("socket failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT)
 
     // Setup the TCP listening socket
-    FailWithAction( bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR,  UpdateStatus("bind failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
-    freeaddrinfo(result);
-    // Don't forget to do this as this might cause a crash if we free result twice
-    result = NULL;
+    FailWithAction( bind(ListenSocket, resultServer->ai_addr, (int)resultServer->ai_addrlen) == SOCKET_ERROR,  UpdateStatus("bind failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
+    freeaddrinfo(resultServer);
+    // Don't forget to do this as this might cause a crash if we free resultServer twice
+    resultServer = NULL;
+    
+    UpdateStatus("Server started.\r\n");
 
     FailWithAction( listen(ListenSocket, SOMAXCONN), UpdateStatus("listen failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
 
@@ -302,8 +358,8 @@ static DWORD WINAPI StartServer(void* serverArg)
     int accumSizeRecv;
     do
     {        
-        FailWithAction( (iResult = recv(ClientSocket, recvbuf, recvbuflen, 0)) < 0, UpdateStatus("recv failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
-        if (iResult > 0) 
+        FailWithAction( (iresultServer = recv(ClientSocket, recvbuf, recvbuflen, 0)) < 0, UpdateStatus("recv failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
+        if (iresultServer > 0) 
         {
             // 0xBEEF0000 is indicator that the following data is the folder name
             if (((unsigned int *) recvbuf)[0] == 0xBEEF0000)
@@ -351,20 +407,20 @@ static DWORD WINAPI StartServer(void* serverArg)
             }
             else
             {
-                accumSizeRecv += iResult;
-                //printf("Bytes received: %d\n", accumSizeRecv);
+                accumSizeRecv += iresultServer;
+                //printf("Bytes received: %d\r\n", accumSizeRecv);
 
                 int writeLen;
-                FailWithAction( (writeLen = fwrite(recvbuf, 1, iResult, fo)) != iResult, UpdateStatus("Write file failed"), EXIT )
+                FailWithAction( (writeLen = fwrite(recvbuf, 1, iresultServer, fo)) != iresultServer, UpdateStatus("Write file failed"), EXIT )
             }
             
             // send valid response after every receive
             ((unsigned int *)recvbuf)[0] = 0xBEEFFACE;
             FailWithAction( send( ClientSocket, recvbuf, sizeof(unsigned int), 0 ) == SOCKET_ERROR, UpdateStatus("send response failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
         }
-        else if (iResult == 0)
-            UpdateStatus("Connection closing...\n");
-    } while (iResult > 0);
+        else if (iresultServer == 0)
+            UpdateStatus("Connection closing...\r\n");
+    } while (iresultServer > 0);
 
     // shutdown the connection since we're done
     FailWithAction( shutdown(ClientSocket, SD_SEND) == SOCKET_ERROR, UpdateStatus("shutdown failed with error!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
@@ -373,14 +429,8 @@ static DWORD WINAPI StartServer(void* serverArg)
 	
 // cleanup
 EXIT:
-	if (result != NULL)
-		freeaddrinfo(result);
+	ToggleStartButton();    
 
-	closesocket(ListenSocket);
-	closesocket(ClientSocket);
-
-    EnableWindow(GetDlgItem( dlgHandle, IDC_START ), true);
-    
     return ret;
 }
 
@@ -402,9 +452,7 @@ bool IsServerResponseValid(SOCKET * ConnectSocket, char recvbuf[])
 // Thread worker for server
 static DWORD WINAPI StartClient(void* clientArg)
 {
-    SOCKET ConnectSocket = INVALID_SOCKET;
-    struct addrinfo *result = NULL,
-                    *ptr = NULL,
+    struct addrinfo *ptr = NULL,
                     hints;
     int ret = 1;
     //char *sendbuf = "this is a test";
@@ -426,10 +474,10 @@ static DWORD WINAPI StartClient(void* clientArg)
     // Resolve the server address and port
     UpdateStatus("Connecting to: %s\r\n", destIP);
     
-    FailWithAction( getaddrinfo(destIP, portNo, &hints, &result) != 0 , UpdateStatus("getaddrinfo failed with error: %d\n", iResult), EXIT )
+    FailWithAction( getaddrinfo(destIP, portNo, &hints, &resultClient) != 0 , UpdateStatus("getaddrinfo failed with error: %d\r\n", iResult), EXIT )
 
     // Attempt to connect to an address until one succeeds
-    for(ptr=result; ptr != NULL ;ptr=ptr->ai_next) {
+    for(ptr=resultClient; ptr != NULL ;ptr=ptr->ai_next) {
 
         // Create a SOCKET for connecting to server
         FailWithAction( (ConnectSocket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol)) == INVALID_SOCKET, UpdateStatus("socket failed with error!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
@@ -444,9 +492,10 @@ static DWORD WINAPI StartClient(void* clientArg)
         break;
     }
 
-    freeaddrinfo(result);
+    freeaddrinfo(resultClient);
+    resultClient = NULL;
 
-    FailWithAction( ConnectSocket == INVALID_SOCKET, UpdateStatus("Unable to connect to server!\n"), EXIT )
+    FailWithAction( ConnectSocket == INVALID_SOCKET, UpdateStatus("Unable to connect to server!\r\n"), EXIT )
 
     // send signal to create a new directory
     ((unsigned int *)recvbuf)[0] = 0xBEEF0000;
@@ -479,7 +528,7 @@ static DWORD WINAPI StartClient(void* clientArg)
             {
                 FailWithAction( (iResult = send( ConnectSocket, recvbuf, readLen, 0 )) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT ) 
                 accumSizeSent += iResult;
-                //printf("Bytes Sent: %ld\n", accumSizeSent);
+                //printf("Bytes Sent: %ld\r\n", accumSizeSent);
             }
             
             if (!IsServerResponseValid(&ConnectSocket, recvbuf))
@@ -499,20 +548,14 @@ static DWORD WINAPI StartClient(void* clientArg)
     ((unsigned int *)recvbuf)[0] = 0xDEADBEEF;
     ((unsigned int *)recvbuf)[1] = 0xBEEFFACE;
     FailWithAction( (iResult = send( ConnectSocket, recvbuf, 2*sizeof(unsigned int), 0 )) == SOCKET_ERROR, UpdateStatus("send failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT )
-	UpdateStatus("Last Bytes Sent: %ld\n", iResult);
+	UpdateStatus("Last Bytes Sent: %ld\r\n", iResult);
 
     // shutdown the connection since no more data will be sent
     FailWithAction( shutdown(ConnectSocket, SD_SEND) == SOCKET_ERROR, UpdateStatus("shutdown failed!\r\n%s\r\n", PrintLastError(WSAGetLastError())), EXIT) 
 
     ret = 0;
 EXIT:
-	// cleanup
-	closesocket(ConnectSocket);
-
-    // Don't forget to reset it for next transaction
-    numFiles = 0;
-
-    EnableWindow(GetDlgItem( dlgHandle, IDC_START ), true);
+	ToggleStartButton();
     
     return ret;
 }
@@ -589,40 +632,76 @@ BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
             }
             else if ( ctl == IDC_START && event == BN_CLICKED )
             {
-                EnableWindow(GetDlgItem( hwnd, IDC_START ), false);
-
-                if (IsDlgButtonChecked(hwnd, IDC_RECV))
+                char status[16];
+                
+                GetWindowText(GetDlgItem( hwnd, IDC_START ), status, GetWindowTextLength( GetDlgItem( hwnd, IDC_START ) ) + 1);
+                if (strcmp(status, "Stop") == 0)
                 {
-                    // Don't forget to get the port number
-                    GetWindowText(GetDlgItem( hwnd, IDC_PORT ), portNo, GetWindowTextLength( GetDlgItem( hwnd, IDC_PORT ) ) + 1);
-                    CreateThread(
-                                NULL,                   /* default security attributes.   */
-                                0,                      /* use default stack size.        */
-                                StartServer,          /* thread function name.          */
-                                (void*)NULL,        /* argument to thread function.   */
-                                0,                      /* use default creation flags.    */
-                                &serverDescriptor);     /* returns the thread identifier. */
-                }
-                else if (IsDlgButtonChecked(hwnd, IDC_SEND))
-                {
-                    if (numFiles <= 0)
+                    if (serverHandle != NULL)
                     {
-                        MessageBox(NULL, "No Files Chosen", "Error", 0);
-                        EnableWindow(GetDlgItem( hwnd, IDC_START ), true);
-                        return TRUE;
+                        if (TerminateThread(serverHandle, 0))
+                        {
+                            ToggleStartButton();
+                        }
+                        else
+                        {
+                            UpdateStatus("Terminating server thread failed!\r\n%s\r\n", PrintLastError(GetLastError()));
+                        }
                     }
-                    
-                    // First get the IP and port numbers
-                    GetWindowText(GetDlgItem( hwnd, IDC_IP_ADDR ), destIP, GetWindowTextLength( GetDlgItem( hwnd, IDC_IP_ADDR ) ) + 1);
-                    GetWindowText(GetDlgItem( hwnd, IDC_PORT ), portNo, GetWindowTextLength( GetDlgItem( hwnd, IDC_PORT ) ) + 1);
+                    else if (clientHandle != NULL)
+                    {
+                        if (TerminateThread(clientHandle, 0))
+                        {
+                            ToggleStartButton();
+                        }
+                        else
+                        {
+                            UpdateStatus("Terminating client thread failed!\r\n%s\r\n", PrintLastError(GetLastError()));
+                        }
+                    }
+                }
+                else
+                {
+                    if (IsDlgButtonChecked(hwnd, IDC_RECV))
+                    {
+                        // Don't forget to get the port number
+                        GetWindowText(GetDlgItem( hwnd, IDC_PORT ), portNo, GetWindowTextLength( GetDlgItem( hwnd, IDC_PORT ) ) + 1);
+                        serverHandle = CreateThread(
+                                                    NULL,                   /* default security attributes.   */
+                                                    0,                      /* use default stack size.        */
+                                                    StartServer,          /* thread function name.          */
+                                                    (void*)NULL,        /* argument to thread function.   */
+                                                    0,                      /* use default creation flags.    */
+                                                    &serverDescriptor);     /* returns the thread identifier. */
+                        if (serverHandle != NULL)
+                        {
+                            ToggleStartButton();
+                        }
+                    }
+                    else if (IsDlgButtonChecked(hwnd, IDC_SEND))
+                    {
+                        if (numFiles <= 0)
+                        {
+                            MessageBox(NULL, "No Files Chosen", "Error", 0);
+                            return TRUE;
+                        }
+                        
+                        // First get the IP and port numbers
+                        GetWindowText(GetDlgItem( hwnd, IDC_IP_ADDR ), destIP, GetWindowTextLength( GetDlgItem( hwnd, IDC_IP_ADDR ) ) + 1);
+                        GetWindowText(GetDlgItem( hwnd, IDC_PORT ), portNo, GetWindowTextLength( GetDlgItem( hwnd, IDC_PORT ) ) + 1);
 
-                    CreateThread(
-                                NULL,                   /* default security attributes.   */
-                                0,                      /* use default stack size.        */
-                                StartClient,          /* thread function name.          */
-                                (void*)NULL,        /* argument to thread function.   */
-                                0,                      /* use default creation flags.    */
-                                &clientDescriptor);     /* returns the thread identifier. */
+                        clientHandle = CreateThread(
+                                                    NULL,                   /* default security attributes.   */
+                                                    0,                      /* use default stack size.        */
+                                                    StartClient,          /* thread function name.          */
+                                                    (void*)NULL,        /* argument to thread function.   */
+                                                    0,                      /* use default creation flags.    */
+                                                    &clientDescriptor);     /* returns the thread identifier. */
+                        if (clientHandle != NULL)
+                        {
+                            ToggleStartButton();
+                        }
+                    }
                 }
                 
                 return TRUE;
@@ -675,6 +754,9 @@ int main(void)
     numFiles = 0;
     statusBuffer = (char *) malloc(BUFSIZE * 1024 * 4);
     statusBuffer[0] = '\0';
+    
+    serverHandle = NULL;
+    clientHandle = NULL;
     
     StartDialog();
     

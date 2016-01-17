@@ -3,7 +3,7 @@
 #endif
 
 #define IDD_MAIN_SOCKET                         101
-#define IDCANCEL                                40001
+//#define IDCANCEL                                40001
 #define IDC_CHOOSE_FILES                        40002
 #define IDC_IP_ADDR                             40003
 #define IDC_RECV                                40004
