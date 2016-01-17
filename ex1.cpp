@@ -1,6 +1,9 @@
-#define _WIN32_WINNT  0x501
+//#define _WIN32_WINNT  0x501
+#define _WIN32_WINNT 0x0600
+#define _WIN32_IE 0x0900
 
 #include <windows.h>
+#include <commctrl.h>
 #include <iostream>
 #include <string>
 
@@ -740,6 +743,7 @@ void StartDialog(void)
 int main(void) 
 {    
     WSAData wsaData;
+    INITCOMMONCONTROLSEX icex;
     int iResult;
     
     iResult = WSAStartup(MAKEWORD(2,2), &wsaData);
@@ -757,7 +761,11 @@ int main(void)
     
     serverHandle = NULL;
     clientHandle = NULL;
-    
+
+    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    icex.dwICC = ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&icex);
+
     StartDialog();
     
     WSACleanup();
