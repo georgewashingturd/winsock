@@ -2,6 +2,8 @@
 #define _WIN32_WINNT 0x0600
 #define _WIN32_IE 0x0900
 
+#include <winsock2.h>
+
 #include <windows.h>
 #include <commctrl.h>
 #include <iostream>
@@ -10,7 +12,6 @@
 #include <direct.h>
 #include <stdio.h>
 #include <iphlpapi.h>
-#include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <time.h>
@@ -96,7 +97,7 @@ void UpdateStatusPanel(const char * message)
     if (statusBuffer == NULL)
         return;
     
-    if (strlen(statusBuffer) + strlen(statusBuffer) > ((BUFSIZE * 1024 * 4) - 1))
+    if (strlen(statusBuffer) + strlen(message) > ((BUFSIZE * 1024 * 4) - 1))
         ptr = 0;
     else
         ptr = strlen(statusBuffer);
