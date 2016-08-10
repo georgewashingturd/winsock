@@ -596,6 +596,9 @@ BOOL CALLBACK DialogProc( HWND hwnd, UINT message, WPARAM wp, LPARAM lp )
     { 
         case WM_INITDIALOG:
             
+            SetWindowLong(hwnd, GWL_EXSTYLE, GetWindowLong(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED);
+            SetLayeredWindowAttributes(hwnd, 0, (255 * 80) / 100, LWA_ALPHA);
+
             hIcon = (HICON)LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_MYICON));
             if(hIcon)
             {
