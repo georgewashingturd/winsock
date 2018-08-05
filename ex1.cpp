@@ -22,7 +22,8 @@
 #define FailWithAction(cond, action, label) if (cond) {action; goto label;}
 #define UpdateStatus(...) do{ sprintf(msg, __VA_ARGS__); UpdateStatusPanel(msg);}while(0)
 
-#define DEFAULT_BUFLEN (512*16)
+//#define DEFAULT_BUFLEN (512*16)
+#define DEFAULT_BUFLEN (512*1024)
 #define DEFAULT_PORT    "27015"
 #define BUFSIZE         1024
 
@@ -54,6 +55,8 @@ struct addrinfo *resultServer = NULL;
 
 SOCKET ConnectSocket = INVALID_SOCKET;
 struct addrinfo *resultClient = NULL;
+
+bool commandPrompt = false;
     
 /*
 string  GetFileName( const string & prompt ) { 
@@ -93,18 +96,25 @@ char * PrintLastError(DWORD dw)
 
 void UpdateStatusPanel(const char * message)
 {
-    int ptr = 0;
-    if (statusBuffer == NULL)
-        return;
-    
-    if (strlen(statusBuffer) + strlen(message) > ((BUFSIZE * 1024 * 4) - 1))
-        ptr = 0;
+    if (commandPrompt)
+    {
+        printf("%s", message);
+    }
     else
-        ptr = strlen(statusBuffer);
-    
-    sprintf(&statusBuffer[ptr], "%s", message);
-    SetWindowText(GetDlgItem( dlgHandle, IDC_STATUS ), statusBuffer);
-    PostMessage(GetDlgItem( dlgHandle, IDC_STATUS ),EM_LINESCROLL,0,(LPARAM)100000);
+    {
+        int ptr = 0;
+        if (statusBuffer == NULL)
+            return;
+        
+        if (strlen(statusBuffer) + strlen(message) > ((BUFSIZE * 1024 * 4) - 1))
+            ptr = 0;
+        else
+            ptr = strlen(statusBuffer);
+        
+        sprintf(&statusBuffer[ptr], "%s", message);
+        SetWindowText(GetDlgItem( dlgHandle, IDC_STATUS ), statusBuffer);
+        PostMessage(GetDlgItem( dlgHandle, IDC_STATUS ),EM_LINESCROLL,0,(LPARAM)100000);
+    }
 }
 
 void ToggleStartButton(void)
@@ -477,7 +487,7 @@ static DWORD WINAPI StartClient(void* clientArg)
 
     // Resolve the server address and port
     UpdateStatus("Connecting to: %s\r\n", destIP);
-    
+
     FailWithAction( getaddrinfo(destIP, portNo, &hints, &resultClient) != 0 , UpdateStatus("getaddrinfo failed with error: %d\r\n", iResult), EXIT )
 
     // Attempt to connect to an address until one succeeds
@@ -744,7 +754,7 @@ void StartDialog(void)
     }	
 }
 
-int main(void) 
+int main(int argc, char * argv[]) 
 {    
     WSAData wsaData;
     INITCOMMONCONTROLSEX icex;
@@ -766,12 +776,57 @@ int main(void)
     serverHandle = NULL;
     clientHandle = NULL;
 
-    icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icex.dwICC = ICC_STANDARD_CLASSES;
-    InitCommonControlsEx(&icex);
+    if (argc > 1)
+    {
+        //commandPrompt = true;
+        if (argv[1][0] == 'r' && argc == 3)
+        {
+            strncpy(portNo, argv[2], BUFSIZE-1);
+            
+            serverHandle = CreateThread(
+                                        NULL,                   /* default security attributes.   */
+                                        0,                      /* use default stack size.        */
+                                        StartServer,          /* thread function name.          */
+                                        (void*)NULL,        /* argument to thread function.   */
+                                        0,                      /* use default creation flags.    */
+                                        &serverDescriptor);     /* returns the thread identifier. */
+                                        
+            
+            if (serverHandle != NULL)
+            {
+                WaitForSingleObject(serverHandle, INFINITE);
+            }
+        }
+        else if (argv[1][0] == 's' && argc == 5)
+        {
+            strncpy(destIP, argv[2], BUFSIZE-1);
+            strncpy(portNo, argv[3], BUFSIZE-1);
+            fileList = (char **)malloc(sizeof(char *) * 2);
+            fileList[0] = argv[4];
+            fileList[1] = argv[4];
+            numFiles = 1;
+            
+            clientHandle = CreateThread(
+                                        NULL,                   /* default security attributes.   */
+                                        0,                      /* use default stack size.        */
+                                        StartClient,          /* thread function name.          */
+                                        (void*)NULL,        /* argument to thread function.   */
+                                        0,                      /* use default creation flags.    */
+                                        &clientDescriptor);     /* returns the thread identifier. */
+            if (clientHandle != NULL)
+            {
+                WaitForSingleObject(clientHandle, INFINITE);
+            }
+        }
+    }
+    else
+    {    
+        icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+        icex.dwICC = ICC_STANDARD_CLASSES;
+        InitCommonControlsEx(&icex);
 
-    StartDialog();
-    
+        StartDialog();
+    }
     WSACleanup();
     
     return 0;
